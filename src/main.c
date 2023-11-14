@@ -1,3 +1,4 @@
+#include "time_object.h"
 #include <anjay/anjay.h>
 #include <anjay/security.h>
 #include <anjay/server.h>
@@ -26,7 +27,8 @@ static int setup_security_object(anjay_t *anjay)
 
 	// Anjay will assign Instance ID automatically
 	anjay_iid_t security_instance_id = ANJAY_ID_INVALID;
-	if (anjay_security_object_add_instance(anjay, &security_instance, &security_instance_id)) {
+	if (anjay_security_object_add_instance(anjay, &security_instance,
+					       &security_instance_id)) {
 		return -1;
 	}
 
@@ -57,7 +59,8 @@ static int setup_server_object(anjay_t *anjay)
 
 	// Anjay will assign Instance ID automatically
 	anjay_iid_t server_instance_id = ANJAY_ID_INVALID;
-	if (anjay_server_object_add_instance(anjay, &server_instance, &server_instance_id)) {
+	if (anjay_server_object_add_instance(anjay, &server_instance,
+					     &server_instance_id)) {
 		return -1;
 	}
 
@@ -88,10 +91,22 @@ int main(int argc, char *argv[])
 		result = -1;
 	}
 
+	const anjay_dm_object_def_t **time_object = NULL;
 	if (!result) {
-		result = anjay_event_loop_run(anjay, avs_time_duration_from_scalar(1, AVS_TIME_S));
+		time_object = time_object_create();
+		if (time_object) {
+			result = anjay_register_object(anjay, time_object);
+		} else {
+			result = -1;
+		}
+	}
+
+	if (!result) {
+		result = anjay_event_loop_run(
+			anjay, avs_time_duration_from_scalar(1, AVS_TIME_S));
 	}
 
 	anjay_delete(anjay);
+	time_object_release(time_object);
 	return result;
 }
