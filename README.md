@@ -1,2 +1,3 @@
-# anjay-basic-client
+# Anjay Basic Client
+
 Simple LwM2M Client based on Anjay library

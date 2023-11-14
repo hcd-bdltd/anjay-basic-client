@@ -1,0 +1,12 @@
+CompileFlags:
+  Add: []
+  Remove: ["-fno-printf-return-value", "-mfp16-format=ieee", "-fno-reorder-functions"]
+
+Diagnostics:
+  UnusedIncludes: Strict
+
+InlayHints:
+  Designators: Yes
+  Enabled: Yes
+  ParameterNames: Yes
+  DeducedTypes: Yes
