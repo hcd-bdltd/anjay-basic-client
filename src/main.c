@@ -3,19 +3,26 @@
 #include <anjay/server.h>
 #include <avsystem/commons/avs_log.h>
 
-// Installs Security Object and adds and instance of it.
-// An instance of Security Object provides information needed to connect to
-// LwM2M server.
+/// Installs Security Object and adds and instance of it.
+/// An instance of Security Object provides information needed to connect to
+/// LwM2M server.
 static int setup_security_object(anjay_t *anjay)
 {
 	if (anjay_security_object_install(anjay)) {
 		return -1;
 	}
 
-	const anjay_security_instance_t security_instance = {
+	static const char PSK_IDENTITY[] = "1d3nt1ty";
+	static const char PSK_KEY[] = "P4s$w0rd";
+
+	anjay_security_instance_t security_instance = {
 		.ssid = 1,
-		.server_uri = "coap://eu.iot.avsystem.cloud:5683",
-		.security_mode = ANJAY_SECURITY_NOSEC};
+		.server_uri = "coaps://eu.iot.avsystem.cloud:5684",
+		.security_mode = ANJAY_SECURITY_PSK,
+		.public_cert_or_psk_identity = (const uint8_t *)PSK_IDENTITY,
+		.public_cert_or_psk_identity_size = strlen(PSK_IDENTITY),
+		.private_cert_or_psk_key = (const uint8_t *)PSK_KEY,
+		.private_cert_or_psk_key_size = strlen(PSK_KEY)};
 
 	// Anjay will assign Instance ID automatically
 	anjay_iid_t security_instance_id = ANJAY_ID_INVALID;
@@ -26,8 +33,8 @@ static int setup_security_object(anjay_t *anjay)
 	return 0;
 }
 
-// Installs Server Object and adds and instance of it.
-// An instance of Server Object provides the data related to a LwM2M Server.
+/// Installs Server Object and adds and instance of it.
+/// An instance of Server Object provides the data related to a LwM2M Server.
 static int setup_server_object(anjay_t *anjay)
 {
 	if (anjay_server_object_install(anjay)) {
