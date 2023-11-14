@@ -1,41 +1,18 @@
-#include "time_object.h"
+#include <pthread.h>
+#include <unistd.h>
+
 #include <anjay/anjay.h>
 #include <anjay/security.h>
 #include <anjay/server.h>
 #include <avsystem/commons/avs_log.h>
 
-typedef struct {
-	anjay_t *anjay;
-	const anjay_dm_object_def_t **time_object;
-} time_object_job_args_t;
+#include "time_object.h"
 
-/// Periodically notifies the library about Resource value changes
-static void notify_job(avs_sched_t *sched, const void *args_ptr)
-{
-	const time_object_job_args_t *args =
-		(const time_object_job_args_t *)args_ptr;
-
-	time_object_notify(args->anjay, args->time_object);
-
-	// Schedule run of the same function after 1 second
-	AVS_SCHED_DELAYED(sched, NULL,
-			  avs_time_duration_from_scalar(1, AVS_TIME_S),
-			  notify_job, args, sizeof(*args));
-}
-
-/// Periodically issues a Send message with application type and current time
-static void send_job(avs_sched_t *sched, const void *args_ptr)
-{
-	const time_object_job_args_t *args =
-		(const time_object_job_args_t *)args_ptr;
-
-	time_object_send(args->anjay, args->time_object);
-
-	// Schedule run of the same function after 10 seconds
-	AVS_SCHED_DELAYED(sched, NULL,
-			  avs_time_duration_from_scalar(10, AVS_TIME_S),
-			  send_job, args, sizeof(*args));
-}
+#if !defined(ANJAY_WITH_THREAD_SAFETY) ||                                      \
+	!defined(AVS_COMMONS_SCHED_THREAD_SAFE)
+#error "This example requires Anjay compiled with thread safety enabled"
+#endif // !defined(ANJAY_WITH_THREAD_SAFETY) ||
+       // !defined(AVS_COMMONS_SCHED_THREAD_SAFE)
 
 /// Installs Security Object and adds and instance of it.
 /// An instance of Security Object provides information needed to connect to
@@ -100,6 +77,14 @@ static int setup_server_object(anjay_t *anjay)
 	return 0;
 }
 
+static void *event_loop_func(void *anjay)
+{
+	intptr_t result = anjay_event_loop_run(
+		(anjay_t *)anjay,
+		avs_time_duration_from_scalar(100, AVS_TIME_MS));
+	return (void *)result;
+}
+
 int main(int argc, char *argv[])
 {
 	if (argc != 2) {
@@ -134,19 +119,18 @@ int main(int argc, char *argv[])
 		}
 	}
 
+	pthread_t event_loop_thread;
 	if (!result) {
-		// Run notify_job and send_job the first time;
-		// this will schedule periodic calls to themselves via the
-		// scheduler
-		notify_job(anjay_get_scheduler(anjay),
-			   &(const time_object_job_args_t){
-				   .anjay = anjay, .time_object = time_object});
-		send_job(anjay_get_scheduler(anjay),
-			 &(const time_object_job_args_t){
-				 .anjay = anjay, .time_object = time_object});
+		result = pthread_create(&event_loop_thread, NULL,
+					event_loop_func, anjay);
+	}
 
-		result = anjay_event_loop_run(
-			anjay, avs_time_duration_from_scalar(1, AVS_TIME_S));
+	if (!result) {
+		// Periodically notify the library about Resource value changes
+		while (true) {
+			sleep(1);
+			time_object_notify(anjay, time_object);
+		}
 	}
 
 	anjay_delete(anjay);

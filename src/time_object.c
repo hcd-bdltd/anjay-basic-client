@@ -10,13 +10,14 @@
  */
 #include <assert.h>
 #include <stdbool.h>
+#include <pthread.h>
 
 #include <anjay/anjay.h>
-#include <anjay/lwm2m_send.h>
 #include <avsystem/commons/avs_defs.h>
 #include <avsystem/commons/avs_list.h>
-#include <avsystem/commons/avs_log.h>
 #include <avsystem/commons/avs_memory.h>
+
+#include "time_object.h"
 
 /**
  * Current Time: RW, Single, Mandatory
@@ -51,6 +52,7 @@ typedef struct time_instance_struct {
 
 typedef struct time_object_struct {
 	const anjay_dm_object_def_t *def;
+	pthread_mutex_t mutex;
 	AVS_LIST(time_instance_t) instances;
 } time_object_t;
 
@@ -81,13 +83,15 @@ static int list_instances(anjay_t *anjay,
 			  anjay_dm_list_ctx_t *ctx)
 {
 	(void)anjay;
+	time_object_t *obj = get_obj(obj_ptr);
 
+	pthread_mutex_lock(&obj->mutex);
 	AVS_LIST(time_instance_t) it;
-	AVS_LIST_FOREACH(it, get_obj(obj_ptr)->instances)
+	AVS_LIST_FOREACH(it, obj->instances)
 	{
 		anjay_dm_emit(ctx, it->iid);
 	}
-
+	pthread_mutex_unlock(&obj->mutex);
 	return 0;
 }
 
@@ -104,7 +108,6 @@ static int init_instance(time_instance_t *inst, anjay_iid_t iid)
 static void release_instance(time_instance_t *inst)
 {
 	(void)inst;
-	// Nothing to clean up in this object
 }
 
 static time_instance_t *add_instance(time_object_t *obj, anjay_iid_t iid)
@@ -142,7 +145,13 @@ static int instance_create(anjay_t *anjay,
 	(void)anjay;
 	time_object_t *obj = get_obj(obj_ptr);
 
-	return add_instance(obj, iid) ? 0 : ANJAY_ERR_INTERNAL;
+	pthread_mutex_lock(&obj->mutex);
+	int result = 0;
+	if (add_instance(obj, iid)) {
+		result = ANJAY_ERR_INTERNAL;
+	}
+	pthread_mutex_unlock(&obj->mutex);
+	return result;
 }
 
 static int instance_remove(anjay_t *anjay,
@@ -152,20 +161,23 @@ static int instance_remove(anjay_t *anjay,
 	(void)anjay;
 	time_object_t *obj = get_obj(obj_ptr);
 
+	pthread_mutex_lock(&obj->mutex);
+	int result = ANJAY_ERR_NOT_FOUND;
 	AVS_LIST(time_instance_t) * it;
 	AVS_LIST_FOREACH_PTR(it, &obj->instances)
 	{
 		if ((*it)->iid == iid) {
 			release_instance(*it);
 			AVS_LIST_DELETE(it);
-			return 0;
+			result = 0;
+			break;
 		} else if ((*it)->iid > iid) {
 			break;
 		}
 	}
-
-	assert(0);
-	return ANJAY_ERR_NOT_FOUND;
+	assert(!result);
+	pthread_mutex_unlock(&obj->mutex);
+	return result;
 }
 
 static int instance_reset(anjay_t *anjay,
@@ -173,13 +185,13 @@ static int instance_reset(anjay_t *anjay,
 			  anjay_iid_t iid)
 {
 	(void)anjay;
-
 	time_object_t *obj = get_obj(obj_ptr);
+
+	pthread_mutex_lock(&obj->mutex);
 	time_instance_t *inst = find_instance(obj, iid);
 	assert(inst);
-
 	inst->application_type[0] = '\0';
-
+	pthread_mutex_unlock(&obj->mutex);
 	return 0;
 }
 
@@ -206,29 +218,35 @@ static int resource_read(anjay_t *anjay,
 			 anjay_output_ctx_t *ctx)
 {
 	(void)anjay;
-
 	time_object_t *obj = get_obj(obj_ptr);
+
+	pthread_mutex_lock(&obj->mutex);
 	time_instance_t *inst = find_instance(obj, iid);
 	assert(inst);
-
+	int result;
 	switch (rid) {
 	case RID_CURRENT_TIME: {
 		assert(riid == ANJAY_ID_INVALID);
 		int64_t timestamp;
 		if (avs_time_real_to_scalar(&timestamp, AVS_TIME_S,
 					    avs_time_real_now())) {
-			return -1;
+			result = -1;
+		} else {
+			result = anjay_ret_i64(ctx, timestamp);
 		}
-		return anjay_ret_i64(ctx, timestamp);
+		break;
 	}
 
 	case RID_APPLICATION_TYPE:
 		assert(riid == ANJAY_ID_INVALID);
-		return anjay_ret_string(ctx, inst->application_type);
+		result = anjay_ret_string(ctx, inst->application_type);
+		break;
 
 	default:
-		return ANJAY_ERR_METHOD_NOT_ALLOWED;
+		result = ANJAY_ERR_METHOD_NOT_ALLOWED;
 	}
+	pthread_mutex_unlock(&obj->mutex);
+	return result;
 }
 
 static int resource_write(anjay_t *anjay,
@@ -237,35 +255,40 @@ static int resource_write(anjay_t *anjay,
 			  anjay_input_ctx_t *ctx)
 {
 	(void)anjay;
-
 	time_object_t *obj = get_obj(obj_ptr);
+
+	pthread_mutex_lock(&obj->mutex);
 	time_instance_t *inst = find_instance(obj, iid);
 	assert(inst);
-
+	int result;
 	switch (rid) {
 	case RID_APPLICATION_TYPE:
 		assert(riid == ANJAY_ID_INVALID);
-		return anjay_get_string(ctx, inst->application_type,
-					sizeof(inst->application_type));
+		result = anjay_get_string(ctx, inst->application_type,
+					  sizeof(inst->application_type));
+		break;
 
 	default:
-		return ANJAY_ERR_METHOD_NOT_ALLOWED;
+		result = ANJAY_ERR_METHOD_NOT_ALLOWED;
 	}
+	pthread_mutex_unlock(&obj->mutex);
+	return result;
 }
 
 int transaction_begin(anjay_t *anjay,
 		      const anjay_dm_object_def_t *const *obj_ptr)
 {
 	(void)anjay;
-
 	time_object_t *obj = get_obj(obj_ptr);
 
+	pthread_mutex_lock(&obj->mutex);
 	time_instance_t *element;
 	AVS_LIST_FOREACH(element, obj->instances)
 	{
 		strcpy(element->application_type_backup,
 		       element->application_type);
 	}
+	pthread_mutex_unlock(&obj->mutex);
 	return 0;
 }
 
@@ -273,15 +296,16 @@ int transaction_rollback(anjay_t *anjay,
 			 const anjay_dm_object_def_t *const *obj_ptr)
 {
 	(void)anjay;
-
 	time_object_t *obj = get_obj(obj_ptr);
 
+	pthread_mutex_lock(&obj->mutex);
 	time_instance_t *element;
 	AVS_LIST_FOREACH(element, obj->instances)
 	{
 		strcpy(element->application_type,
 		       element->application_type_backup);
 	}
+	pthread_mutex_unlock(&obj->mutex);
 	return 0;
 }
 
@@ -303,6 +327,14 @@ static const anjay_dm_object_def_t OBJ_DEF = {
 
 const anjay_dm_object_def_t **time_object_create(void)
 {
+	pthread_mutexattr_t attr;
+	if (pthread_mutexattr_init(&attr)) {
+		return NULL;
+	}
+	// anjay_dm_emit() and anjay_dm_emit_res() may call other handlers,
+	// so we need a recursive mutex
+	pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+
 	time_object_t *obj =
 		(time_object_t *)avs_calloc(1, sizeof(time_object_t));
 	if (!obj) {
@@ -310,10 +342,22 @@ const anjay_dm_object_def_t **time_object_create(void)
 	}
 	obj->def = &OBJ_DEF;
 
+	if (pthread_mutex_init(&obj->mutex, &attr)) {
+		pthread_mutexattr_destroy(&attr);
+		avs_free(obj);
+		return NULL;
+	}
+
+	pthread_mutexattr_destroy(&attr);
+	pthread_mutex_lock(&obj->mutex);
 	time_instance_t *inst = add_instance(obj, 0);
 	if (inst) {
 		strcpy(inst->application_type, "Clock 0");
-	} else {
+	}
+	pthread_mutex_unlock(&obj->mutex);
+
+	if (!inst) {
+		pthread_mutex_destroy(&obj->mutex);
 		avs_free(obj);
 		return NULL;
 	}
@@ -325,13 +369,13 @@ void time_object_release(const anjay_dm_object_def_t **def)
 {
 	if (def) {
 		time_object_t *obj = get_obj(def);
+		pthread_mutex_lock(&obj->mutex);
 		AVS_LIST_CLEAR(&obj->instances)
 		{
 			release_instance(obj->instances);
 		}
-
-		// Nothing to clean up in this object
-
+		pthread_mutex_unlock(&obj->mutex);
+		pthread_mutex_destroy(&obj->mutex);
 		avs_free(obj);
 	}
 }
@@ -342,92 +386,21 @@ void time_object_notify(anjay_t *anjay, const anjay_dm_object_def_t **def)
 		return;
 	}
 	time_object_t *obj = get_obj(def);
-
+	pthread_mutex_lock(&obj->mutex);
 	int64_t current_timestamp;
-	if (avs_time_real_to_scalar(&current_timestamp, AVS_TIME_S,
-				    avs_time_real_now())) {
-		return;
-	}
-
-	AVS_LIST(time_instance_t) it;
-	AVS_LIST_FOREACH(it, obj->instances)
-	{
-		if (it->last_notify_timestamp != current_timestamp) {
-			if (!anjay_notify_changed(anjay, 3333, it->iid,
-						  RID_CURRENT_TIME)) {
-				it->last_notify_timestamp = current_timestamp;
+	if (!avs_time_real_to_scalar(&current_timestamp, AVS_TIME_S,
+				     avs_time_real_now())) {
+		AVS_LIST(time_instance_t) it;
+		AVS_LIST_FOREACH(it, obj->instances)
+		{
+			if (it->last_notify_timestamp != current_timestamp) {
+				if (!anjay_notify_changed(anjay, 3333, it->iid,
+							  RID_CURRENT_TIME)) {
+					it->last_notify_timestamp =
+						current_timestamp;
+				}
 			}
 		}
 	}
-}
-
-static void send_finished_handler(anjay_t *anjay, anjay_ssid_t ssid,
-				  const anjay_send_batch_t *batch, int result,
-				  void *data)
-{
-	(void)anjay;
-	(void)ssid;
-	(void)batch;
-	(void)data;
-
-	if (result != ANJAY_SEND_SUCCESS) {
-		avs_log(time_object, ERROR, "Send failed, result: %d", result);
-	} else {
-		avs_log(time_object, TRACE, "Send successful");
-	}
-}
-
-void time_object_send(anjay_t *anjay, const anjay_dm_object_def_t **def)
-{
-	if (!anjay || !def) {
-		return;
-	}
-	time_object_t *obj = get_obj(def);
-	const anjay_ssid_t server_ssid = 1;
-
-	// Allocate new batch builder.
-	anjay_send_batch_builder_t *builder = anjay_send_batch_builder_new();
-
-	if (!builder) {
-		avs_log(time_object, ERROR, "Failed to allocate batch builder");
-		return;
-	}
-
-	int res = 0;
-
-	AVS_LIST(time_instance_t) it;
-	AVS_LIST_FOREACH(it, obj->instances)
-	{
-		// Add current values of resources from Time Object.
-		if (anjay_send_batch_data_add_current(builder, anjay,
-						      obj->def->oid, it->iid,
-						      RID_CURRENT_TIME) ||
-		    anjay_send_batch_data_add_current(builder, anjay,
-						      obj->def->oid, it->iid,
-						      RID_APPLICATION_TYPE)) {
-			anjay_send_batch_builder_cleanup(&builder);
-			avs_log(time_object, ERROR,
-				"Failed to add batch data, result: %d", res);
-			return;
-		}
-	}
-	// After adding all values, compile our batch for sending.
-	anjay_send_batch_t *batch = anjay_send_batch_builder_compile(&builder);
-
-	if (!batch) {
-		anjay_send_batch_builder_cleanup(&builder);
-		avs_log(time_object, ERROR, "Batch compile failed");
-		return;
-	}
-
-	// Schedule our send to be run on next `anjay_sched_run()` call.
-	res = anjay_send(anjay, server_ssid, batch, send_finished_handler,
-			 NULL);
-
-	if (res) {
-		avs_log(time_object, ERROR, "Failed to send, result: %d", res);
-	}
-
-	// After scheduling, we can release our batch.
-	anjay_send_batch_release(&batch);
+	pthread_mutex_unlock(&obj->mutex);
 }
