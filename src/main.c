@@ -4,6 +4,24 @@
 #include <anjay/server.h>
 #include <avsystem/commons/avs_log.h>
 
+typedef struct {
+	anjay_t *anjay;
+	const anjay_dm_object_def_t **time_object;
+} notify_job_args_t;
+
+/// Periodically notifies the library about Resource value changes
+static void notify_job(avs_sched_t *sched, const void *args_ptr)
+{
+	const notify_job_args_t *args = (const notify_job_args_t *)args_ptr;
+
+	time_object_notify(args->anjay, args->time_object);
+
+	// Schedule run of the same function after 1 second
+	AVS_SCHED_DELAYED(sched, NULL,
+			  avs_time_duration_from_scalar(1, AVS_TIME_S),
+			  notify_job, args, sizeof(*args));
+}
+
 /// Installs Security Object and adds and instance of it.
 /// An instance of Security Object provides information needed to connect to
 /// LwM2M server.
@@ -102,6 +120,12 @@ int main(int argc, char *argv[])
 	}
 
 	if (!result) {
+		// Run notify_job the first time;
+		// this will schedule periodic calls to itself via the scheduler
+		notify_job(anjay_get_scheduler(anjay),
+			   &(const notify_job_args_t){
+				   .anjay = anjay, .time_object = time_object});
+
 		result = anjay_event_loop_run(
 			anjay, avs_time_duration_from_scalar(1, AVS_TIME_S));
 	}

@@ -44,6 +44,7 @@ typedef struct time_instance_struct {
 	anjay_iid_t iid;
 	char application_type[64];
 	char application_type_backup[64];
+	int64_t last_notify_timestamp;
 } time_instance_t;
 
 typedef struct time_object_struct {
@@ -330,5 +331,30 @@ void time_object_release(const anjay_dm_object_def_t **def)
 		// Nothing to clean up in this object
 
 		avs_free(obj);
+	}
+}
+
+void time_object_notify(anjay_t *anjay, const anjay_dm_object_def_t **def)
+{
+	if (!anjay || !def) {
+		return;
+	}
+	time_object_t *obj = get_obj(def);
+
+	int64_t current_timestamp;
+	if (avs_time_real_to_scalar(&current_timestamp, AVS_TIME_S,
+				    avs_time_real_now())) {
+		return;
+	}
+
+	AVS_LIST(time_instance_t) it;
+	AVS_LIST_FOREACH(it, obj->instances)
+	{
+		if (it->last_notify_timestamp != current_timestamp) {
+			if (!anjay_notify_changed(anjay, 3333, it->iid,
+						  RID_CURRENT_TIME)) {
+				it->last_notify_timestamp = current_timestamp;
+			}
+		}
 	}
 }
