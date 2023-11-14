@@ -10,6 +10,7 @@ zephyr/
 
 # build output
 build/
+anjay-basic-client
 
 ### CMake ###
 CMakeLists.txt.user
